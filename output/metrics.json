@@ -1,1 +1,1 @@
-{"tension": {"avg_error_px": 16.02, "jitter_rate": 16656.3, "tension_ratio": 1.39, "tension_score": 50.4, "diagnosis": "\u901f\u5ea6\u5339\u914d\u826f\u597d (Speed Matching): \u5f20\u529b\u5206\u914d\u5408\u7406\u3002", "overshoot": 6}, "loss": {"loss_count": 72, "total_off_time": 1.64, "on_target_pct": 83.6}}
+{"tension": {"avg_error_px": 16.02, "ptc": 1364.0, "mean_a_rel": 35394.0}, "loss": {"loss_count": 72, "total_off_time": 1.64, "on_target_pct": 83.6}}
