@@ -159,8 +159,8 @@ def run_calibration(video_path, max_frames=100, output_dir="output"):
         if not ret: break
 
         vis = frame.copy()
-        ball_pos = detect_by_color(frame, b_lo, b_hi, min_area=30, is_crosshair=False)
-        cross_pos = detect_by_color(frame, c_lo, c_hi, min_area=5, is_crosshair=True)
+        ball_pos, _, _ = detect_ball_by_color(frame, b_lo, b_hi)
+        cross_pos, _, _ = detect_ball_by_color(frame, c_lo, c_hi)
 
         if ball_pos:
             b_found += 1
