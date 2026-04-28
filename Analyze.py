@@ -1,13 +1,10 @@
 """
 kovaak_tracker/analyze.py
 ==========================
-Step 7.1: Pure Tension Coefficient (PTC) - Raw Measurement Edition
-Original Theory & Mathematics by: Jianrui (Jerry) Zhang
-
-Objective:
-    - Pure data collection and measurement.
-    - NO arbitrary thresholds, NO subjective scoring, NO diagnosis.
-    - Establishes the groundwork for empirical data analysis.
+V8: Vectorized Kinematics & Dual Mismatch Engine
+Architecture:
+- Stage 1: Full Kinematics Extraction (Vectorized)
+- Stage 2: Masked Physics Evaluation (Miss Mask Logic)
 """
 
 import argparse
@@ -17,13 +14,17 @@ import pandas as pd
 from pathlib import Path
 from scipy.signal import savgol_filter
 
+# ══════════════════════════════════════════
+#  Basic Utility Functions
+# ══════════════════════════════════════════
+
 def load_data(csv_path: str) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     df['is_valid'] = df['ball_x'].notna()
     valid_df = df[df['is_valid']].copy().sort_values("frame")
     
     if valid_df.empty:
-        raise ValueError("No valid target data detected in the video!")
+        raise ValueError("Invalid video data: No target detected!")
         
     valid_df['frame_diff'] = valid_df['frame'].diff()
     valid_df['chunk_id'] = (valid_df['frame_diff'] > 2).cumsum()
@@ -31,113 +32,106 @@ def load_data(csv_path: str) -> pd.DataFrame:
     return valid_df.reset_index(drop=True)
 
 def apply_smoothing(series: np.ndarray, window_length: int, polyorder: int = 3) -> np.ndarray:
+    """Applies Savitzky-Golay filter to smooth trajectory data."""
     if window_length % 2 == 0: window_length += 1
     if len(series) < window_length: return series
     return savgol_filter(series, window_length, polyorder)
 
-def calculate_vector_kinematics(x: np.ndarray, y: np.ndarray, fps: float) -> tuple:
-    vx = np.diff(x) * fps
-    vy = np.diff(y) * fps
-    vx = np.append(vx, vx[-1])
-    vy = np.append(vy, vy[-1])
-    
-    ax = np.diff(vx) * fps
-    ay = np.diff(vy) * fps
-    ax = np.append(ax, ax[-1])
-    ay = np.append(ay, ay[-1])
-    return ax, ay
+def calc_derivative(series: np.ndarray, fps: float) -> np.ndarray:
+    """Calculates the derivative and pads the last element to maintain array length."""
+    diffs = np.diff(series) * fps
+    return np.append(diffs, diffs[-1])
 
-def run_tension_analysis(df: pd.DataFrame, fps: float) -> dict:
+# ══════════════════════════════════════════
+#  Stage 1: Kinematics Extraction
+# ══════════════════════════════════════════
+
+def extract_kinematics(df: pd.DataFrame, fps: float) -> pd.DataFrame:
     window_sz = max(5, int(fps * 0.1)) 
+    processed_chunks = []
     
-    all_E = []          
-    all_a_rel = []    
-    all_is_loss = []    
-    
-    for _, group in df.groupby('chunk_id'):
+    for chunk_id, group in df.groupby('chunk_id'):
         if len(group) < window_sz: continue
             
-        cx = apply_smoothing(group["cross_x"].values, window_sz)
-        cy = apply_smoothing(group["cross_y"].values, window_sz)
-        bx = apply_smoothing(group["ball_x"].values, window_sz)
-        by = apply_smoothing(group["ball_y"].values, window_sz)
-        
-        bw = group["ball_w"].values
-        bh = group["ball_h"].values
+        # 1. Trajectory Smoothing
+        cx, cy = apply_smoothing(group["cross_x"].values, window_sz), apply_smoothing(group["cross_y"].values, window_sz)
+        bx, by = apply_smoothing(group["ball_x"].values, window_sz), apply_smoothing(group["ball_y"].values, window_sz)
+        bw, bh = group["ball_w"].values, group["ball_h"].values
 
+        # 2. Spatial Error & Hit Detection (Build Miss Mask)
         dx, dy = bx - cx, by - cy
-        dist_E = np.hypot(dx, dy)
-        is_loss = (np.abs(dx) > (bw / 2 * 1.05)) | (np.abs(dy) > (bh / 2 * 1.05))
-        
-        ax_target, ay_target = calculate_vector_kinematics(bx, by, fps)
-        ax_cross, ay_cross = calculate_vector_kinematics(cx, cy, fps)
-        
-        a_rel_mag = np.hypot(ax_cross - ax_target, ay_cross - ay_target)
+        error_px = np.hypot(dx, dy)
+        # Rectangular Hitbox: Miss (1.0) if outside edges, otherwise Hit (0.0)
+        is_miss = ((np.abs(dx) > (bw / 2 * 1.35)) | (np.abs(dy) > (bh / 2 * 1.35))).astype(float)
 
-        all_E.extend(dist_E)
-        all_a_rel.extend(a_rel_mag)
-        all_is_loss.extend(is_loss)
+        # 3. Target Kinematics
+        v_tx, v_ty = calc_derivative(bx, fps), calc_derivative(by, fps)
+        a_tx, a_ty = calc_derivative(v_tx, fps), calc_derivative(v_ty, fps)
 
-    E_array = np.array(all_E)
-    a_rel_array = np.array(all_a_rel)
-    loss_mask = np.array(all_is_loss)
+        # 4. Crosshair Kinematics
+        v_cx, v_cy = calc_derivative(cx, fps), calc_derivative(cy, fps)
+        a_cx, a_cy = calc_derivative(v_cx, fps), calc_derivative(v_cy, fps)
+        
+        # 5. Mismatch Vectors (Magnitude of differences)
+        v_rel = np.hypot(v_cx - v_tx, v_cy - v_ty) # Speed Mismatch
+        a_rel = np.hypot(a_cx - a_tx, a_cy - a_ty) # Acceleration Mismatch
+
+        v_rel = np.hypot(v_cx - v_tx, v_cy - v_ty) # 速度失配
+        a_rel = np.hypot(a_cx - a_tx, a_cy - a_ty) # 加速度失配
+
+        processed_chunks.append(pd.DataFrame({
+            'frame': group['frame'].values, 'time_s': group['time_s'].values,
+            'chunk_id': chunk_id, 'error_px': error_px, 'is_miss': is_miss,
+            'speed_t': np.hypot(v_tx, v_ty), 'accel_t': np.hypot(a_tx, a_ty),
+            'speed_c': np.hypot(v_cx, v_cy), 'accel_c': np.hypot(a_cx, a_cy),
+            'v_rel': v_rel, 'a_rel': a_rel,
+            # [新增] 为 Dashboard 录像回放保留原始坐标数据
+            'cross_x': group['cross_x'].values, 'cross_y': group['cross_y'].values,
+            'ball_x': group['ball_x'].values, 'ball_y': group['ball_y'].values,
+            'ball_w': bw, 'ball_h': bh
+        }))
+
+    return pd.concat(processed_chunks, ignore_index=True)
+
+# ══════════════════════════════════════════
+#  Stage 2: Vectorized Evaluation
+# ══════════════════════════════════════════
+
+def evaluate_mechanics(kdf: pd.DataFrame) -> dict:
+    # Extract Feature Vectors
+    M = kdf['is_miss'].values      # Miss Mask Vector
+    V_rel = kdf['v_rel'].values    # Speed Mismatch Vector
+    A_rel = kdf['a_rel'].values    # Accel Mismatch Vector
+    E = kdf['error_px'].values     # Error Vector
     
-    critical_E = E_array[loss_mask]
-    critical_a_rel = a_rel_array[loss_mask]
+    total_miss_frames = np.sum(M)
+    total_frames = len(kdf)
+    accuracy = (1 - (total_miss_frames / total_frames)) * 100 if total_frames > 0 else 0
 
-    # 🚀 纯粹计算，不加任何评价
-    if len(critical_E) == 0: 
-        mean_E = float(np.mean(E_array)) # 如果完全没脱靶，用全局误差兜底
-        mean_a_rel = 0.0
-        ptc = 0.0
+    if total_miss_frames > 0:
+        # Use vector dot product for Masked average calculation
+        # Only evaluate physics features during miss frames (where M == 1)
+        mean_v_mismatch = np.dot(M, V_rel) / total_miss_frames
+        mean_a_mismatch = np.dot(M, A_rel) / total_miss_frames
+        mean_e_mismatch = np.dot(M, E) / total_miss_frames
+        
+        # PTC: Acceleration Mismatch / Spatial Error (Measures Arm/Spring Stiffness)
+        ptc = mean_a_mismatch / max(mean_e_mismatch, 1.0)
     else:
-        mean_E = max(float(np.mean(critical_E)), 1.0)
-        mean_a_rel = float(np.mean(critical_a_rel))
-        ptc = mean_a_rel / mean_E # 物理刚度计算
+        mean_v_mismatch = mean_a_mismatch = ptc = 0.0
+
+    # Calculate loss events for dashboard compatibility
+    loss_events = (kdf['is_miss'].diff() > 0).sum()
+    total_off_time = total_miss_frames / (fps := 1 / kdf['time_s'].diff().mean() if total_frames > 0 else 60)
 
     return {
-        "avg_error_px": round(float(np.mean(E_array)), 2),
-        "ptc":          round(ptc, 1),
-        "mean_a_rel":   round(mean_a_rel, 0)
-    }
-
-def summarize(res: dict, los: dict) -> None:
-    print("\n" + "═" * 70)
-    print(f"  KovaaK Physics Measurement (Raw Data Edition)")
-    print("═" * 70)
-    
-    print("\n[ 🌊 Physics Metrics (Calculated on Loss-Frames) ]")
-    print(f"  Pure Tension Coeff (PTC) : {res['ptc']:>8.1f} Hz²  (Stiffness)")
-    print(f"  Mean Relative Accel      : {res['mean_a_rel']:>8.0f} px/s²")
-    print(f"  Global Spatial Error     : {res['avg_error_px']:>8.1f} px")
-    
-    print("\n[ 🎯 Hit Performance ]")
-    print(f"  Accuracy (On-Target)     : {los['on_target_pct']:>8.1f} %")
-    print(f"  Loss Count / Duration    : {los['loss_count']:>8} times / {los['total_off_time']:.2f} s")
-    print("═" * 70 + "\n")
-
-def loss_metrics(df: pd.DataFrame, fps: float) -> dict:
-    dx = np.abs(df["cross_x"] - df["ball_x"])
-    dy = np.abs(df["cross_y"] - df["ball_y"])
-    on_target = (dx <= (df["ball_w"] / 2 * 1.05)) & (dy <= (df["ball_h"] / 2 * 1.05))
-    on_target = on_target.values 
-    
-    segments = []
-    if len(on_target) > 0:
-        curr = on_target[0]
-        cnt = 1
-        for i in range(1, len(on_target)):
-            if on_target[i] == curr: cnt += 1
-            else:
-                segments.append((curr, cnt))
-                curr = on_target[i]; cnt = 1
-        segments.append((curr, cnt))
-
-    off_dur = [c/fps for s, c in segments if not s]
-    return {
-        "loss_count":     len(off_dur),
-        "total_off_time": round(sum(off_dur), 2),
-        "on_target_pct":  round(float(on_target.mean() * 100), 1),
+        "accuracy": round(accuracy, 1),
+        "speed_mismatch": round(mean_v_mismatch, 1),
+        "accel_mismatch": round(mean_a_mismatch, 0),
+        "ptc": round(ptc, 1),
+        "avg_error_px": round(np.mean(E), 2),
+        "loss_count": loss_events,
+        "total_off_time": round(total_off_time, 2)
     }
 
 def main():
@@ -147,20 +141,41 @@ def main():
     args = parser.parse_args()
 
     df = load_data(args.csv)
-    res = run_tension_analysis(df, args.fps)
-    los = loss_metrics(df, args.fps)
+    kdf = extract_kinematics(df, args.fps)
+    res = evaluate_mechanics(kdf)
     
-    summarize(res, los)
-    
+    print("\n" + "═" * 70)
+    print(f"  KovaaK Vectorized Physics Measurement Report (V8 Edition)")
+    print("═" * 70)
+    print(f"  Accuracy (On-Target)    : {res['accuracy']}%")
+    print(f"  Speed Mismatch (ΔV)     : {res['speed_mismatch']} px/s")
+    print(f"  Tension Mismatch (ΔA)   : {res['accel_mismatch']} px/s²")
+    print(f"  Pure Tension Coeff (PTC): {res['ptc']} Hz² (Stiffness)")
+    print(f"  Global Avg Spatial Error: {res['avg_error_px']} px")
+    print("═" * 70 + "\n")
+
+    # Export Data
     out_dir = Path("output")
-    df["error_px"] = np.hypot(df["ball_x"] - df["cross_x"], df["ball_y"] - df["cross_y"])
-    dx = np.abs(df["cross_x"] - df["ball_x"])
-    dy = np.abs(df["cross_y"] - df["ball_y"])
-    df["on_target"] = ((dx <= (df["ball_w"] / 2 * 1.05)) & (dy <= (df["ball_h"] / 2 * 1.05))).astype(int)
+    kdf['on_target'] = 1 - kdf['is_miss'] # Alias for Dashboard
+    kdf.to_csv(out_dir / "frame_errors.csv", index=False)
     
-    df.to_csv(out_dir / "frame_errors.csv", index=False)
+    export_format = {
+        "tension": {
+            "avg_error_px": float(res["avg_error_px"]),
+            "speed_mismatch": float(res["speed_mismatch"]),
+            "accel_mismatch": float(res["accel_mismatch"]),
+            "ptc": float(res["ptc"])
+        },
+        "loss": {
+            "on_target_pct": float(res["accuracy"]),
+            "loss_count": int(res["loss_count"]),
+            "total_off_time": float(res["total_off_time"])
+        }
+    }
+    
     with open(out_dir / "metrics.json", "w") as f:
-        json.dump({"tension": res, "loss": los}, f)
+        json.dump(export_format, f)
+
 
 if __name__ == "__main__":
     main()
