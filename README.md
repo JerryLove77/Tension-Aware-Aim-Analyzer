@@ -1,46 +1,61 @@
-🎯 Tension-Aware Aim-Analyzer
-A physics-based aim tracking analyzer designed to diagnose Muscle Tension and Speed Matching using computer vision.
+# KovaaK Tracking Analyzer
 
-🌊 Core Concept: Tension Vector Analysis
-This tool implements a unique J/E (Jitter/Error) Ratio model to identify the root cause of tracking errors:
+A computer-vision based aim tracking analyzer for reviewing target tracking, spatial error, speed mismatch, and acceleration mismatch.
 
-Jitter (J): The relative acceleration of your crosshair.
+## Workflow
 
-Error (E): The spatial distance between your crosshair and the target.
+1. Calibration and tracking extraction:
 
-Tension Balance Ratio (TBR): J/E
-
-High TBR (> 1.8): Indicates Over-tension (Grip is too tight, leading to excessive jitter).
-
-Low TBR (< 0.6): Indicates Under-tension (Reaction is lagging, hand is too relaxed).
-
-🚀 Workflow
-Calibration (app.py):
-
-Bash
+```bash
 streamlit run app.py
-Trim your VOD to the relevant tracking segment.
+```
 
-Sample the target color to initialize the CV tracker.
+This exports:
 
-Physics Analysis (Analyze.py):
+- `output/calibration_raw.csv`
+- `output/calib_config.json`
 
-Bash
+2. Physics analysis:
+
+```bash
 python Analyze.py --csv output/calibration_raw.csv --fps 360
-Processes frame data and generates the Tension Diagnosis.
+```
 
-Visualization Dashboard (dashboard.py):
+This exports:
 
-Bash
+- `output/frame_errors.csv`
+- `output/metrics.json`
+
+3. Dashboard:
+
+```bash
 streamlit run dashboard.py
-View your Tension Quadrant and interactive VOD replay with dynamic hitboxes.
+```
 
-🛠️ Requirements
-Python 3.10+
+## Project Structure
 
-OpenCV, Streamlit, Pandas, Plotly, SciPy
+```text
+app.py                         Streamlit calibration/tracking UI
+Analyze.py                     CLI entry for kinematics analysis
+dashboard.py                   Streamlit dashboard UI
+calibrate.py                   Optional OpenCV interactive calibration CLI
+requirements.txt               Python dependencies
+kovaak_tracker/
+  analysis.py                  Kinematics extraction and metrics export
+  calibration_cli.py           OpenCV mouse-pick calibration flow
+  dashboard_data.py            Dashboard data loading, charts, and replay rendering
+  settings.py                  Shared output paths
+  tracking.py                  Tracking-by-detection pipeline
+  video.py                     Video metadata, frame reading, upload temp files
+  vision.py                    HSV sampling, color detection, tracker creation
+```
 
-📝 Acknowledgments
-Inspired by MattyOW's theories on tension management and speed matching.
+The root scripts are intentionally thin. New features should usually be added inside `kovaak_tracker/`, then called from the matching UI or CLI entry.
 
-Developed by Jianrui (Jerry) Zhang.
+## Install
+
+```bash
+pip install -r requirements.txt
+```
+
+For CSRT tracking, keep `opencv-contrib-python` installed. If only the base OpenCV package is available, the app falls back to KCF when possible.
